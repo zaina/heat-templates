@@ -1,0 +1,322 @@
+heat_template_version: 2016-05-10
+
+description: |
+  Node.js cluster with MySQL.
+
+parameter_groups:
+- label: Server Settings
+  parameters:
+  - image
+  - flavor
+
+- label: Node.js Application Settings
+  parameters:
+  - revision
+  - packages
+  - repo
+  - deploy_key
+
+- label: dev-params
+  parameters:
+  - destination
+  - child_template
+  - load_balancer_hostname
+  - server_hostnames
+  - kitchen
+  - chef_version
+
+parameters:
+  server_hostnames:
+    label: Server Name
+    description: Server Name
+    type: string
+    default: nodejs-%index%
+    constraints:
+    - length:
+        min: 1
+        max: 64
+    - allowed_pattern: "^[a-zA-Z][a-zA-Z0-9%-]*$"
+      description: |
+        Must begin with a letter and contain only alphanumeric characters.
+
+  database_username:
+    label: Database Username
+    description: Database Username
+    type: string
+    default: 'nodejs'
+
+  load_balancer_hostname:
+    label: Load Balancer Hostname
+    description: Hostname for the Load Balancer
+    type: string
+    default: nodejs-app-load-balancer
+    constraints:
+    - length:
+        min: 1
+        max: 64
+    - allowed_pattern: "^[a-zA-Z][a-zA-Z0-9-]*$"
+      description: |
+        Must begin with a letter and contain only alphanumeric characters.
+
+  nodejs_app_server_count:
+    label: Server Count
+    description: |
+      Required: Number of servers to spin up as a part of this deployment.
+    type: number
+    default: 2
+    constraints:
+    - range:
+        min: 1
+        max: 25
+      description: Must be between 1 and 25 servers.
+
+  image:
+    label: Operating System
+    description: |
+      Required: Server image used for all servers that are created as a part of
+      this deployment.
+    type: string
+    default: Red Hat Enterprise Linux 7
+    constraints:
+    - allowed_values:
+      - Red Hat Enterprise Linux 7
+      - Red Hat Enterprise Linux 6
+      description: Must be a supported operating system.
+
+  flavor:
+    label: Server Size
+    description: |
+      Required: Cloud Server flavor to use. The size is based on the
+      amount of RAM for the provisioned server.
+    type: string
+    default: 4 GB 
+    constraints:
+    - allowed_values:
+      - 1 GB 
+      - 2 GB 
+      - 4 GB 
+      - 8 GB 
+      description: |
+        Must be a valid Cloud Server flavor for the region you have
+        selected to deploy into.
+
+  db_flavor:
+    label: Database Size
+    description: |
+      Required: Cloud Database Flavor. Size is based on amount of RAM
+      for the provisioned instance.
+    type: string
+    default: 1GB Instance
+    constraints:
+    - allowed_values:
+      - 512MB Instance
+      - 1GB Instance
+      - 2GB Instance
+      - 4GB Instance
+      - 8GB Instance
+      - 16GB Instance
+      description: |
+        Must be a valid Cloud Database flavor for the region you have
+        selected to deploy into.
+
+  datastore_version:
+    label: MySQL Version
+    type: string
+    description: |
+      Required: Version of MySQL to run on the Cloud Databases instance.
+    default: "5.6"
+    constraints:
+    - allowed_values:
+      - "5.6"
+      - "5.1"
+
+  db_size:
+    label: Database Size
+    description: |
+      Required: Amount of storage required for your Cloud Database,
+      in GB.
+    type: number
+    default: 10
+    constraints:
+    - range:
+        min: 10
+        max: 150
+    description: |
+        Database instance size, in GB. min 10, max 150
+
+  revision:
+    label: Revision
+    description: |
+      Optional: Git Branch/Ref to deploy. Default: HEAD
+    type: string
+    default: HEAD
+
+  packages:
+    label: System Packages
+    description: |
+      Optional: Additional system packages to install. 
+    type: string
+    default: ''
+
+  repo:
+    label: Git Repository
+    description: |
+      Optional: URL to your git repository. Use the https:// syntax for public
+      repositories, use git@ syntax for private repositories.
+    type: string
+    default: ''
+
+  deploy_key:
+    label: Git Deploy Key
+    description: |
+      Optional: If you specified a private repository, provide your private
+      deploy key here.
+    type: string
+    default: ''
+
+  destination:
+    label: Site Path
+    description: Path to setup your application on your servers.
+    default: /var/www/vhosts/application
+    type: string
+
+  kitchen:
+    label: Kitchen URL
+    description: URL for the kitchen to use
+    type: string
+    default: https://github.com/zaina/heat-templates/nodejs
+
+  chef_version:
+    label: Chef Version
+    description: Version of chef client to use
+    type: string
+    default: 11.16.0
+
+  child_template:
+    label: Child Template
+    description: |
+      Location of the child template to use for the Node.js web servers
+    type: string
+    default: https://raw.githubusercontent.com/zaina/heat-templates/nodejs/master/template.yaml
+
+resources:
+  ssh_key:
+    type: "OS::Nova::KeyPair"
+    properties:
+      name: { get_param: "OS::stack_id" }
+      save_private_key: true
+
+  load_balancer:
+    type: "Cloud::LoadBalancer"
+    depends_on: nodejs_app_servers
+    properties:
+      name:
+        str_replace:
+          template: '%lbname%_%stackid%'
+          params:
+            '%lbname%': { get_param: load_balancer_hostname }
+            '%stackid%': { get_param: 'OS::stack_id' }
+
+      nodes:
+      - addresses: { get_attr: [nodejs_app_servers, privateIPv4] }
+        port: 80
+        condition: ENABLED
+      port: 80
+      healthMonitor:
+        type: HTTP
+        delay: 10
+        timeout: 5
+        attemptsBeforeDeactivation: 2
+        path: /
+        statusRegex: ^[2345]0[0-9]$
+      protocol: HTTP
+      algorithm: ROUND_ROBIN
+      contentCaching: DISABLED
+      virtualIps:
+      - type: PUBLIC
+        ipVersion: IPV4
+      metadata:
+        heat: { get_param: "OS::stack_id" }
+
+  database_user_password:
+    type: "OS::Heat::RandomString"
+    properties:
+      length: 16
+      sequence: lettersdigits
+
+  db_admin_password:
+    type: "OS::Heat::RandomString"
+    properties:
+      length: 16
+      sequence: lettersdigits
+
+  database_server:
+    type: OS::Trove::Instance
+    properties:
+      name:
+        str_replace:
+          template: "nodejs_app_db_%stackid%"
+          params:
+            "%stackid%": { get_param: "OS::stack_id" }
+      flavor: { get_param: db_flavor }
+      size: { get_param: db_size }
+      datastore_type: mysql
+      datastore_version: { get_param: datastore_version }
+      databases:
+      - name: nodejs_db
+      users:
+      - name: { get_param: database_username }
+        password: { get_resource: database_user_password }
+        databases: [ nodejs_db ]
+
+  nodejs_app_servers:
+    type: "OS::Heat::ResourceGroup"
+    depends_on: database_server
+    properties:
+      count: { get_param: nodejs_app_server_count }
+      resource_def:
+        type: { get_param: child_template }
+        properties:
+          flavor: { get_param: flavor }
+          hostname: { get_param: server_hostnames }
+          ssh_key_name: { get_resource: ssh_key }
+          ssh_private_key: { get_attr: [ssh_key, private_key] }
+          kitchen: { get_param: kitchen }
+          chef_version: { get_param: chef_version }
+          revision: { get_param: revision }
+          packages: { get_param: packages }
+          repo: { get_param: repo }
+          deploy_key: { get_param: deploy_key }
+          destination: { get_param: destination }
+          db_server_ip: { get_attr: [database_server, hostname] }
+          database_username: { get_param: database_username }
+          database_user_password: { get_resource: database_user_password }
+
+outputs:
+  load_balancer_ip:
+    description: Load Balancer IP
+    value: { get_attr: [load_balancer, PublicIp] }
+
+  nodejs_url:
+    description: "Node.js URL"
+    value:
+      str_replace:
+        template: "http://%ip%"
+        params:
+          "%ip%": { get_attr: [load_balancer, PublicIp] }
+
+  database_server_ip:
+    description: Database Server hostname
+    value: { get_attr: [database_server, hostname] }
+
+  mysql_root_password:
+    description: MySQL Root Password
+    value: { get_attr: [db_admin_password, value] }
+
+  node_server_ips:
+    description: Node.js Server IPs
+    value: { get_attr: [nodejs_app_servers, accessIPv4] }
+
+  private_key:
+    description: SSH Private Key
+    value: { get_attr: [ssh_key, private_key] }
